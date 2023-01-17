@@ -1,22 +1,41 @@
 import matplotlib.pyplot as plt
 import networkx as nx
+import numpy as np
 import torch
-from beartype import beartype
 from torch.distributions import Distribution
 
 
-@beartype
+class Prior:
+    def __init__(self, dist: Distribution, **params: float):
+        self.dist = dist(**params)
+        assert self.dist.has_rsample, "Distribution must have the reparameterization trick"
+        super().__setattr__('theta', self.__sample_learable_param())
+
+    def __sample_learable_param(self): return self.dist.log_prob(self.dist.rsample())
+
+
+class Model:
+    def __init__(self,
+                 data: torch.Tensor,
+                 model: Distribution,
+                 **priors: Prior):
+        self.data   = data
+        self.model  = model
+        self.priors = priors
+
+
 class Golem:
     def __init__(self,
-                 statistical_model: Distribution,
-                 generative_assumptions: dict[str, str] | None = None) -> None:
-        self.generative_assumptions = generative_assumptions
-        self.statistical_model = statistical_model
+                 assumptions: dict[str, str] | None = None) -> None:
+        self.assumptions = assumptions
 
     def build_dag(self, show=False) -> nx.Graph:
-        assert self.generative_assumptions is not None, "No generative assumptions provided"
+        '''
+        Builds a DAG of the model.
+        '''
+        assert self.assumptions is not None, "No generative assumptions provided"
         graph = nx.DiGraph()
-        for fr, to in self.generative_assumptions.items():
+        for fr, to in self.assumptions.items():
             graph.add_edge(fr, to)
 
         if show:
@@ -24,7 +43,4 @@ class Golem:
             plt.show()
 
         return graph
-
-    def sample(self, size: tuple[int, ...]) -> torch.Tensor:
-        return self.statistical_model.sample(size)
 
