@@ -1,17 +1,15 @@
 import matplotlib.pyplot as plt
 import networkx as nx
-import numpy as np
 import torch
 from torch.distributions import Distribution
 
 
 class Prior:
-    def __init__(self, dist: Distribution, **params: float):
+    def __init__(self, estimand: str, dist: Distribution, **params: float):
         self.dist = dist(**params)
-        assert self.dist.has_rsample, "Distribution must have the reparameterization trick"
-        super().__setattr__('theta', self.__sample_learable_param())
-
-    def __sample_learable_param(self): return self.dist.log_prob(self.dist.rsample())
+        self.estimand = estimand
+        # Initialize the state of the prior
+        self.theta = torch.ones(1, requires_grad=True)
 
 
 class Model:
@@ -22,6 +20,31 @@ class Model:
         self.data   = data
         self.model  = model
         self.priors = priors
+
+    def log_likelihood(self):
+        '''Compute the log likelihood'''
+        params = {}
+        for prior in self.priors.values(): params |= {prior.estimand: prior.theta}
+
+        return self.model(**params).log_prob(self.data).sum()
+
+    def log_posterior(self):
+        '''Compute the log posterior'''
+        total = 0
+        for prior in self.priors.values(): total += prior.dist.log_prob(prior.theta)
+
+        return total + self.log_likelihood()
+
+    def maximum_a_posteriori(self, lr: float = 1e-1, n_iter: int = 1000):
+        '''Find the MAP estimate of the parameters'''
+        optim = torch.optim.Adam([prior.theta for prior in self.priors.values()], lr=lr)
+        for _ in range(n_iter):
+            optim.zero_grad()
+            loss = -self.log_posterior()
+            loss.backward()
+            optim.step()
+
+        return {prior.estimand: prior.theta.item() for prior in self.priors.values()}
 
 
 class Golem:
