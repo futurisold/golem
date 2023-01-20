@@ -22,7 +22,7 @@ Let's assume we want to model the data collected by Howell between August 1967 a
 
 ```python
 import pandas as pd
-from golem import Prior, LinearCombination, Model, Golem, MetropolisHastings
+from golem import Prior, LinearCombination, Model, Golem
 
 # Load the data
 data = pd.read_excel('AdultHtWtOne_each_17985.xls')[['htcms', 'wtkgs']].dropna()
@@ -48,4 +48,5 @@ golem.maximum_a_posteriori()
 samples = golem.sample(n_samples=10000, burn_in=5000)
 ```
 
+Now that we have the distribution associated with the parameters of the model, the sky is the limit.
 
