@@ -16,27 +16,27 @@ class Prior:
 
 
 class LinearCombination:
-    def __init__(self, data: torch.Tensor, intercept: Prior, slope: Prior) -> None:
+    def __init__(self, data: torch.Tensor, intercept: Prior, slope: Prior, center: bool = True) -> None:
         self.data      = data
         self.intercept = intercept
         self.slope     = slope
-        self.__avg     = data.mean()
+        self.__avg     = data.mean() if center else 0
 
     @property
-    def params(self): return self.intercept.theta + self.slope.theta * (self.data - self.__avg)
+    def params(self) -> torch.Tensor: return self.intercept.theta + self.slope.theta * (self.data - self.__avg)
 
 
 class Model:
     def __init__(self,
                  data: torch.Tensor,
                  model: Distribution,
-                 **priors: Prior):
+                 **priors: Prior | LinearCombination) -> None:
         self.data   = data
         self.model  = model
         self.priors = priors
         assert 'log_prob' in dir(self.model), 'The model must have a \"log_prob\" method!'
 
-    def log_prior(self):
+    def log_prior(self) -> float:
         total = 0
         for prior in self.priors.values():
             if isinstance(prior, Prior): total += prior.dist.log_prob(prior.theta)
@@ -47,7 +47,7 @@ class Model:
 
         return total
 
-    def log_likelihood(self):
+    def log_likelihood(self) -> float:
         params = {}
         for estimand, prior in self.priors.items():
             if isinstance(prior, Prior): params |= {estimand: prior.theta}
@@ -56,9 +56,9 @@ class Model:
 
         return sum(self.model(**params).log_prob(self.data))
 
-    def log_posterior(self): return self.log_prior() + self.log_likelihood()
+    def log_posterior(self) -> float: return self.log_prior() + self.log_likelihood()
 
-    def iter_params(self):
+    def iter_params(self) -> dict[str, torch.Tensor]:
         params = {}
         for prior in self.priors.values():
             if isinstance(prior, Prior): params |= {prior.estimand: prior.theta}
@@ -69,7 +69,7 @@ class Model:
 
         return params
 
-    def update(self, estimand: str, theta: torch.Tensor):
+    def update(self, estimand: str, theta: torch.Tensor) -> None:
         # update available only for priors or combinations of priors
         for prior in self.priors.values():
             if isinstance(prior, Prior):
@@ -87,6 +87,14 @@ class Golem:
                  assumptions: dict[str, str] | None = None) -> None:
         self.models = models
         self.assumptions = assumptions
+
+        # Metroplis-Hastings parameters
+        self.__sampler = torch.distributions.Normal(0, 1) # keep it simple and naive - use a normal distribution
+        self.__steps = 0
+        self.__accepted = 0 # keep track of the accepted steps to tune the scale of the sampler every 100 steps
+        self.__tune_interval = 100
+        self.__tune_countdown = self.__tune_interval
+
 
     def build_dag(self, show=False) -> nx.Graph:
         assert self.assumptions is not None, "No generative assumptions provided!"
@@ -111,20 +119,6 @@ class Golem:
 
         return [model.iter_params() for model in self.models]
 
-
-class MetropolisHastings:
-    def __init__(self,
-                 models: list[Model]) -> None:
-
-        self.models  = models
-        # keep it simple and naive - use a normal distribution
-        self.sampler = torch.distributions.Normal(0, 1)
-        self.__steps = 0
-        # keep track of the accepted steps to tune the scale of the sampler every 100 steps
-        self.__accepted = 0
-        self.__tune_interval = 100
-        self.__tune_countdown = self.__tune_interval
-
     def sample(self, n_samples: int = 1000, burn_in: int = 100) -> dict[str, torch.Tensor]:
         # burn-in
         for _ in range(burn_in): self.__step()
@@ -145,8 +139,8 @@ class MetropolisHastings:
 
         for model in self.models:
             for estimand, param in model.iter_params().items():
-                self.sampler.loc = param
-                proposal = self.sampler.sample(param.shape)
+                self.__sampler.loc = param
+                proposal = self.__sampler.sample(param.shape)
                 model.update(estimand, proposal)
 
         new_score = sum(model.log_posterior() for model in self.models)
@@ -163,12 +157,12 @@ class MetropolisHastings:
     def __tune(self) -> None:
         # borrowed from PyMC3
         ratio = self.__acceptance_ratio()
-        if ratio < 0.001:  self.sampler.scale *= 0.1 # reduce by 90%
-        elif ratio < 0.05: self.sampler.scale *= 0.5 # reduce by 50%
-        elif ratio < 0.20: self.sampler.scale *= 0.9 # reduce by 10%
-        elif ratio > 0.95: self.sampler.scale *= 10  # increase by 1000%
-        elif ratio > 0.75: self.sampler.scale *= 2   # increase by 100%
-        elif ratio > 0.50: self.sampler.scale *= 1.1 # increase by 10%
+        if ratio < 0.001:  self.__sampler.scale *= 0.1 # reduce by 90%
+        elif ratio < 0.05: self.__sampler.scale *= 0.5 # reduce by 50%
+        elif ratio < 0.20: self.__sampler.scale *= 0.9 # reduce by 10%
+        elif ratio > 0.95: self.__sampler.scale *= 10  # increase by 1000%
+        elif ratio > 0.75: self.__sampler.scale *= 2   # increase by 100%
+        elif ratio > 0.50: self.__sampler.scale *= 1.1 # increase by 10%
 
     def __accept_proposal(self, new_score: float, old_score: float) -> bool:
         diff = new_score - old_score
