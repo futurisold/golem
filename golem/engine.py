@@ -8,11 +8,22 @@ from torch.distributions import Distribution
 
 
 class Prior:
-    def __init__(self, estimand: str, dist: Distribution, **params: float):
-        self.dist = dist(**params)
+    def __init__(self, estimand: str, dist: Distribution, **params: float) -> None:
+        self.dist     = dist(**params)
         self.estimand = estimand
         # Initialize the state of the prior
-        self.theta = torch.ones(1, requires_grad=True)
+        self.theta    = torch.ones(1, requires_grad=True)
+
+
+class LinearCombination:
+    def __init__(self, data: torch.Tensor, intercept: Prior, slope: Prior) -> None:
+        self.data      = data
+        self.intercept = intercept
+        self.slope     = slope
+        self.__avg     = data.mean()
+
+    @property
+    def params(self): return self.intercept.theta + self.slope.theta * (self.data - self.__avg)
 
 
 class Model:
@@ -23,26 +34,51 @@ class Model:
         self.data   = data
         self.model  = model
         self.priors = priors
+        assert 'log_prob' in dir(self.model), 'The model must have a \"log_prob\" method!'
 
     def log_prior(self):
-        return sum(prior.dist.log_prob(prior.theta) for prior in self.priors.values())
+        total = 0
+        for prior in self.priors.values():
+            if isinstance(prior, Prior): total += prior.dist.log_prob(prior.theta)
+            elif isinstance(prior, LinearCombination):
+                total += prior.intercept.dist.log_prob(prior.intercept.theta)
+                total += prior.slope.dist.log_prob(prior.slope.theta)
+            else: raise ValueError('Invalid prior type!')
+
+        return total
 
     def log_likelihood(self):
-        params = self.iter_params()
+        params = {}
+        for estimand, prior in self.priors.items():
+            if isinstance(prior, Prior): params |= {estimand: prior.theta}
+            elif isinstance(prior, LinearCombination): params |= {estimand: prior.params}
+            else: raise ValueError('Invalid prior type!')
+
         return sum(self.model(**params).log_prob(self.data))
 
-    def log_posterior(self):
-        return self.log_prior() + self.log_likelihood()
+    def log_posterior(self): return self.log_prior() + self.log_likelihood()
 
     def iter_params(self):
         params = {}
-        for prior in self.priors.values(): params |= {prior.estimand: prior.theta}
+        for prior in self.priors.values():
+            if isinstance(prior, Prior): params |= {prior.estimand: prior.theta}
+            elif isinstance(prior, LinearCombination):
+                params |= {prior.intercept.estimand: prior.intercept.theta}
+                params |= {prior.slope.estimand: prior.slope.theta}
+            else: raise ValueError('Invalid prior type!')
+
         return params
 
     def update(self, estimand: str, theta: torch.Tensor):
+        # update available only for priors or combinations of priors
         for prior in self.priors.values():
-            # skip if theta is not in the support of the prior
-            if prior.estimand == estimand and prior.dist.support.check(theta): prior.theta = theta
+            if isinstance(prior, Prior):
+                if prior.estimand == estimand and prior.dist.support.check(theta): prior.theta = theta
+            elif isinstance(prior, LinearCombination):
+                if prior.intercept.estimand == estimand and prior.intercept.dist.support.check(theta): prior.intercept.theta = theta
+                elif prior.slope.estimand == estimand and prior.slope.dist.support.check(theta): prior.slope.theta = theta
+                else: continue # if the estimand is not found, continue to the next prior
+            else: raise ValueError('Invalid prior type!')
 
 
 class Golem:
@@ -53,7 +89,7 @@ class Golem:
         self.assumptions = assumptions
 
     def build_dag(self, show=False) -> nx.Graph:
-        assert self.assumptions is not None, "No generative assumptions provided"
+        assert self.assumptions is not None, "No generative assumptions provided!"
         graph = nx.DiGraph()
         for fr, to in self.assumptions.items():
             graph.add_edge(fr, to)
