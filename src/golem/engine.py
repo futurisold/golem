@@ -17,13 +17,12 @@ class Prior:
 
 class LinearCombination:
     def __init__(self, data: torch.Tensor, intercept: Prior, slope: Prior, center: bool = True) -> None:
-        self.data      = data
+        self.data      = data - data.mean() if center else data
         self.intercept = intercept
         self.slope     = slope
-        self.__avg     = data.mean() if center else 0
 
     @property
-    def params(self) -> torch.Tensor: return self.intercept.theta + self.slope.theta * (self.data - self.__avg)
+    def params(self) -> torch.Tensor: return self.intercept.theta + self.slope.theta * self.data
 
 
 class Model:
